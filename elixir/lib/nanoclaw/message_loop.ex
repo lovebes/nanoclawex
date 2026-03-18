@@ -1,4 +1,6 @@
 defmodule NanoClaw.MessageLoop do
+  @poll_ms 2_000
+
   @moduledoc """
   Polling GenServer that drives message delivery for polling-based channels
   (currently WhatsApp via the shared SQLite database).
@@ -23,8 +25,6 @@ defmodule NanoClaw.MessageLoop do
   alias NanoClaw.Repo
 
   require Logger
-
-  @poll_ms 2_000
 
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
