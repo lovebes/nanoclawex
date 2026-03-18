@@ -30,7 +30,7 @@ NanoClaw.MessageLoop  ──►  NanoClaw.Group (one per registered group)
                                   │
                                   │  Port.open / stdin JSON
                                   ▼
-                           Docker container  (nanoclaw-agent image)
+                           Docker container  (claudecode image)
                                   │
                                   │  stdout marker frames
                                   ▼
@@ -139,15 +139,20 @@ export CONTAINER_RUNTIME=container
 
 ## 3. Build the agent container image
 
-The container image is shared with the Node.js side — build it once from the repo root.
+Build the image once from the repo root. The `container/build.sh` script hardcodes a different image name, so use `docker build` directly:
 
 ```bash
 # From the nanoclaw/ repo root (not the elixir/ subdirectory)
-cd ..
-./container/build.sh
+docker build -t claudecode container/
 ```
 
-This tags the image as `nanoclaw-agent:latest`. The script respects `$CONTAINER_RUNTIME`, so if you set it to `container` above it will use Apple Container.
+For Apple Container:
+
+```bash
+container build -t claudecode container/
+```
+
+This tags the image as `claudecode:latest`.
 
 **Verify the build:**
 
@@ -156,7 +161,7 @@ echo '{"prompt":"What is 2+2?","sessionId":null,"groupFolder":"test","chatJid":"
   | docker run --rm -i \
       -e ANTHROPIC_API_KEY=your-key-here \
       -e ANTHROPIC_BASE_URL=https://api.anthropic.com \
-      nanoclaw-agent
+      claudecode
 ```
 
 You should see output ending with `---NANOCLAW_OUTPUT_START---{"text":"4","sessionId":"..."}---NANOCLAW_OUTPUT_END---`.
@@ -388,7 +393,7 @@ The container will take 10–30 seconds on first run while Docker pulls any miss
 |---|---|
 | `Port.open` raises `enoent` | Docker Desktop is not running — start it and wait for the daemon to be ready |
 | `Container runtime not found: docker` | `$CONTAINER_RUNTIME` points to a binary not in `$PATH` |
-| `Port.open` raises but Docker is running | Container image `nanoclaw-agent` not built — run `../container/build.sh` |
+| `Port.open` raises but Docker is running | Container image `claudecode` not built — run `../container/build.sh` |
 | Container starts but output never appears | `ANTHROPIC_BASE_URL` still points at the Phase 2 proxy — change it to `https://api.anthropic.com` |
 | `Registry.lookup` returns `[]` | `registered_groups` table is empty — follow Path A above to insert a row |
 | `Migrations already up` but no groups | The DB exists but has no `registered_groups` rows — follow Path A step 1–2 |
