@@ -246,112 +246,152 @@ WhatsApp session credentials are saved to `store/whatsapp-auth/` in the repo roo
 
 ### Environment variables
 
-Create a `.env` file in the `elixir/` directory (or export these in your shell):
-
 ```bash
-# Required
-ANTHROPIC_API_KEY=sk-ant-...         # Your Claude API key
-
-# Optional — defaults shown
-ASSISTANT_NAME=Andy                   # Trigger word (@Andy by default)
-CONTAINER_RUNTIME=docker              # or: container (Apple Container)
-TZ=America/New_York                   # Timezone for message timestamps
-ANTHROPIC_BASE_URL=http://host.docker.internal:4000/api/proxy
-                                      # Points containers at the credential proxy.
-                                      # Phase 2 adds the proxy; until then containers
-                                      # need direct API access — set to:
-                                      # https://api.anthropic.com
+cd elixir/
+cp .env.sample .env
 ```
 
-> **Phase 1 note on `ANTHROPIC_BASE_URL`:** Phase 2 adds the in-process credential proxy at `localhost:4000/api/proxy`. For now, set `ANTHROPIC_BASE_URL=https://api.anthropic.com` so containers can reach the API directly using `ANTHROPIC_API_KEY`.
+Open `.env` and set at minimum:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-your-real-key
+
+# Phase 1: point directly at Anthropic (no proxy yet)
+ANTHROPIC_BASE_URL=https://api.anthropic.com
+```
+
+> **Phase 1 note on `ANTHROPIC_BASE_URL`:** the default value in `.env.sample` points at the Phase 2 in-process proxy which doesn't exist yet. You must change it to `https://api.anthropic.com` or containers will fail to reach the API.
 
 ### Database path
 
-`config/config.exs` points to `../store/nanoclaw.db` by default — the same database the Node.js WhatsApp channel writes to. If your database is elsewhere:
+`config/config.exs` defaults to `../store/nanoclaw.db` — the same file the Node.js WhatsApp channel writes to. If you're starting fresh (no WhatsApp set up yet) the app will create a new database there automatically. If your database is elsewhere, override it:
 
 ```bash
-export DATABASE_PATH=/absolute/path/to/nanoclaw.db
+# In .env or your shell
+DATABASE_PATH=/absolute/path/to/nanoclaw.db
 ```
-
-Or edit `config/config.exs` directly.
 
 ---
 
 ## 6. Install dependencies and run
 
+Make sure **Docker Desktop is running** before starting the app — the container runtime must be reachable or `Port.open` will fail when a message is processed.
+
 ```bash
-# From the elixir/ directory
 cd elixir/
 
+# Install Elixir dependencies
 mix deps.get
 
-# Run the test suite to verify everything compiles
+# Verify everything compiles and tests pass
 mix test
 
-# Start the application
+# Load .env and start the interactive shell
+export $(grep -v '^#' .env | grep -v '^$' | xargs)
 iex -S mix
 ```
 
-On startup you will see:
+On a fresh database you will see migrations run:
 
 ```
 [info] == Running 1 NanoClaw.Repo.Migrations.InitialSchema.change/0 forward
 [info] == Migrated 1 in 0.0s
+[info] GroupLoader: starting 0 group(s)
+[info] MessageLoop starting from ts=0
+```
+
+On a database already populated by the Node.js process:
+
+```
+[info] Migrations already up
 [info] GroupLoader: starting 1 group(s)
 [info] Group started: main (123456789@s.whatsapp.net)
 [info] MessageLoop starting from ts=1234567890123
 ```
 
-> If pointing at an existing Node.js database, migrations will detect the tables already exist and skip. If the database is fresh, they will create the schema.
-
 ---
 
 ## 7. Test end-to-end
 
-The quickest way to verify Phase 1 is working without needing WhatsApp:
+There are two paths depending on whether you have WhatsApp set up.
+
+### Path A — fresh database, no WhatsApp (quickest)
+
+Insert a test group directly in the iex session, start it, then inject a message:
 
 ```elixir
-# Inside the iex -S mix session
+# 1. Insert a registered group row
+NanoClaw.Repo.insert!(%NanoClaw.DB.RegisteredGroup{
+  jid: "test@g.us",
+  name: "Test",
+  folder: "main",
+  requires_trigger: false,
+  is_main: true
+})
 
-# 1. Confirm the group loaded
+# 2. Start a Group GenServer for it (GroupLoader only runs at boot)
+group = NanoClaw.Repo.get!(NanoClaw.DB.RegisteredGroup, "test@g.us")
+DynamicSupervisor.start_child(NanoClaw.Groups.Supervisor, {NanoClaw.Group, group})
+
+# 3. Confirm it registered
 Registry.lookup(NanoClaw.GroupRegistry, "main")
 # => [{#PID<0.xxx.0>, nil}]
 
-# 2. Inject a synthetic message
+# 4. Inject a message
+msg = %NanoClaw.DB.Message{
+  id: 1,
+  chat_jid: "test@g.us",
+  sender: "me",
+  sender_name: "Test User",
+  content: "what is 2+2?",
+  timestamp: System.system_time(:millisecond),
+  is_from_me: false,
+  is_bot_message: false
+}
+NanoClaw.Group.inbound_messages("main", [msg])
+```
+
+### Path B — existing Node.js database with WhatsApp
+
+If you've already run the Node.js process and registered a group, the Group GenServers start automatically at boot. Skip steps 1–3 above and go straight to injecting a message, using your real JID:
+
+```elixir
+# Find your group's JID
+NanoClaw.Groups.all()
+# => [%NanoClaw.DB.RegisteredGroup{jid: "123456789@s.whatsapp.net", folder: "main", ...}]
+
 msg = %NanoClaw.DB.Message{
   id: 999_999,
-  chat_jid: "123456789@s.whatsapp.net",   # must match your group's jid
+  chat_jid: "123456789@s.whatsapp.net",
   sender: "test",
   sender_name: "Test User",
   content: "@Andy what is 2+2?",
   timestamp: System.system_time(:millisecond),
   is_from_me: false,
-  is_bot_message: false,
+  is_bot_message: false
 }
-
 NanoClaw.Group.inbound_messages("main", [msg])
-
-# 3. Watch the logs
 ```
 
-Expected output:
+### Expected output (both paths)
 
 ```
-[info] Container spawning for group: main
-... (container output) ...
-[info] [OUTBOUND → 123456789@s.whatsapp.net]
+[info] [OUTBOUND → test@g.us]
 4
 ```
+
+The container will take 10–30 seconds on first run while Docker pulls any missing layers. Subsequent runs are fast.
 
 ### What to check if it doesn't work
 
 | Symptom | Likely cause |
 |---|---|
-| `Registry.lookup` returns `[]` | `registered_groups` table is empty — register a group via the Node.js process first, or insert a row manually |
-| `Container runtime not found: docker` | Docker is not running, or `$CONTAINER_RUNTIME` points to a binary not in `$PATH` |
-| `Port.open` raises | Container image `nanoclaw-agent` not built — run `../container/build.sh` |
-| Output never appears | `ANTHROPIC_BASE_URL` still points at the Phase 2 proxy — set it to `https://api.anthropic.com` for Phase 1 |
-| `Migrations already up` but group not found | The Node.js DB has data but no `registered_groups` row — register a group from WhatsApp first |
+| `Port.open` raises `enoent` | Docker Desktop is not running — start it and wait for the daemon to be ready |
+| `Container runtime not found: docker` | `$CONTAINER_RUNTIME` points to a binary not in `$PATH` |
+| `Port.open` raises but Docker is running | Container image `nanoclaw-agent` not built — run `../container/build.sh` |
+| Container starts but output never appears | `ANTHROPIC_BASE_URL` still points at the Phase 2 proxy — change it to `https://api.anthropic.com` |
+| `Registry.lookup` returns `[]` | `registered_groups` table is empty — follow Path A above to insert a row |
+| `Migrations already up` but no groups | The DB exists but has no `registered_groups` rows — follow Path A step 1–2 |
 
 ---
 
